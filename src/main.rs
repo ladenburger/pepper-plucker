@@ -1,5 +1,6 @@
 use actix_web::{App, HttpResponse, HttpServer, Responder, web};
 use bigdecimal::FromPrimitive;
+use chrono::Local;
 use chrono::NaiveDate;
 use dotenv::dotenv;
 use serde::{Deserialize, Serialize};
@@ -81,6 +82,12 @@ struct NewHarvest {
     /// [value] harvested fruits in grams
     plants: HashMap<String, f64>,
     notes: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DisposePlant {
+    date_disposed: Option<NaiveDate>,
 }
 
 async fn insert_fruit(pool: web::Data<PgPool>, new_fruit: web::Json<NewFruit>) -> impl Responder {
@@ -293,9 +300,30 @@ async fn insert_plant(pool: web::Data<PgPool>, new_plant: web::Json<NewPlant>) -
     return HttpResponse::Ok().body(plant_id);
 }
 
-// TODO: implement
-async fn dispose_plant() -> impl Responder {
-    HttpResponse::Ok().body("Hi")
+async fn dispose_plant(
+    pool: web::Data<PgPool>,
+    path: web::Path<(String,)>,
+    body: web::Json<DisposePlant>,
+) -> impl Responder {
+    println!("hi");
+    let plant_id: String = path.into_inner().0;
+    let date = match body.date_disposed {
+        Some(date) => date,
+        None => Local::now().naive_utc().into(),
+    };
+
+    match sqlx::query!(
+        "update plant set disposed = $1 where plant_id = $2 and disposed is null",
+        date,
+        plant_id
+    )
+    .execute(pool.as_ref())
+    .await
+    {
+        Ok(_) => HttpResponse::Ok().finish(),
+        Err(e) => HttpResponse::InternalServerError()
+            .body("Error updating disposed state. ".to_owned() + &e.to_string()),
+    }
 }
 
 // TODO: implement
@@ -321,7 +349,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(pool.clone()))
             .route("fruit", web::post().to(insert_fruit))
             .route("plant", web::post().to(insert_plant))
-            .route("plant/dispose", web::post().to(dispose_plant))
+            .route("plant/dispose/{plant_id}", web::patch().to(dispose_plant))
             .route("harvest", web::post().to(insert_harvest))
     })
     .bind(format!("{}:{}", host, port))?
