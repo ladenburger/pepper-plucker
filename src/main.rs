@@ -67,16 +67,18 @@ struct NewFruit {
 #[serde(rename_all = "camelCase")]
 struct NewPlant {
     planted: NaiveDate,
-    disposed: Option<NaiveDate>,
+    descriptions: Option<HashMap<String, String>>,
     fruit: i32,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NewHarvest {
-    planted: NaiveDate,
-    disposed: Option<NaiveDate>,
-    fruit: i32,
+    date: NaiveDate,
+    /// [key]   primary key of plant (example: `"FAT26020012"`)
+    /// [value] harvested fruits in grams
+    plants: HashMap<String, f64>,
+    notes: Option<String>,
 }
 
 async fn insert_fruit(pool: web::Data<PgPool>, new_fruit: web::Json<NewFruit>) -> impl Responder {
@@ -94,7 +96,6 @@ async fn insert_fruit(pool: web::Data<PgPool>, new_fruit: web::Json<NewFruit>) -
     let color_id: i32;
 
     if let Some(new_color) = &new_fruit.new_color {
-        // Insert new color and get the color_id
         let color_result = sqlx::query!(
             "INSERT INTO color (hexadecimal) VALUES ($1) RETURNING color_id",
             new_color.hexadecimal
@@ -105,17 +106,25 @@ async fn insert_fruit(pool: web::Data<PgPool>, new_fruit: web::Json<NewFruit>) -
         match color_result {
             Ok(record) => {
                 color_id = record.color_id;
-                // Insert new color translations
                 for (lang_code, color_name) in &new_color.lang {
-                    sqlx::query!(
+                    let insert_result = sqlx::query!(
                         "INSERT INTO locale_color (color, locale_id, value) VALUES ($1, $2, $3)",
                         color_id,
                         lang_code,
                         color_name
                     )
                     .execute(transaction.as_mut())
-                    .await
-                    .unwrap();
+                    .await;
+
+                    match insert_result {
+                        Ok(..) => (),
+                        Err(e) => {
+                            transaction.rollback().await.unwrap();
+
+                            return HttpResponse::InternalServerError()
+                                .body("Error creating color_locale. ".to_owned() + &e.to_string());
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -205,9 +214,55 @@ async fn insert_fruit(pool: web::Data<PgPool>, new_fruit: web::Json<NewFruit>) -
     }
 }
 
-// TODO: implement
-async fn insert_plant() -> impl Responder {
-    HttpResponse::Ok().body("Hi")
+async fn insert_plant(pool: web::Data<PgPool>, new_plant: web::Json<NewPlant>) -> impl Responder {
+    let mut transaction = pool.begin().await.unwrap();
+
+    let query_result = sqlx::query!(
+        "insert into plant (planted, fruit) values ($1, $2) returning plant_id",
+        new_plant.planted,
+        new_plant.fruit
+    )
+    .fetch_one(transaction.as_mut())
+    .await;
+
+    let plant_id: String = match query_result {
+        Ok(r) => r.plant_id,
+        Err(e) => {
+            transaction.rollback().await.unwrap();
+
+            return HttpResponse::InternalServerError()
+                .body("Error creating plant. ".to_owned() + &e.to_string());
+        }
+    };
+    match &new_plant.descriptions {
+        Some(desc) => {
+            for (lang_code, value) in desc {
+                let insert_result = sqlx::query!(
+                    "INSERT INTO locale_fruit_desc (locale_id, fruit, value) VALUES ($1, $2, $3)",
+                    lang_code,
+                    new_plant.fruit,
+                    value
+                )
+                .execute(transaction.as_mut())
+                .await;
+
+                match insert_result {
+                    Ok(..) => (),
+                    Err(e) => {
+                        transaction.rollback().await.unwrap();
+
+                        return HttpResponse::InternalServerError()
+                            .body("Error creating description. ".to_owned() + &e.to_string());
+                    }
+                }
+            }
+        }
+        None => (),
+    };
+
+    transaction.commit().await.unwrap();
+
+    return HttpResponse::Ok().body(plant_id);
 }
 
 // TODO: implement
