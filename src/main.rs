@@ -63,14 +63,20 @@ struct NewFruit {
     /// Average weight of a single fruit in grams.
     average_weight_in_grams: f64,
 
+    /// Optionally add localized descriptions to the new fruit
     fruit_descriptions: Option<HashMap<String, String>>,
+
+    /// If the type is also created in the operation, optionally set the localized descriptions
     fruit_type_descriptions: Option<HashMap<String, String>>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NewPlant {
+    /// Date when the plant was potted.
     planted: NaiveDate,
+
+    /// Which type of fruit does the plant produce
     fruit: i32,
 }
 
@@ -337,7 +343,6 @@ async fn main() -> std::io::Result<()> {
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set.");
     let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
     let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&database_url)
