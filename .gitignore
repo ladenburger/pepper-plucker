@@ -12,3 +12,6 @@ Cargo.lock
 
 # envvars
 .env
+
+# testingscript directory
+scripts/
