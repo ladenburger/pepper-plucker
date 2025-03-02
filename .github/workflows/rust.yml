@@ -43,7 +43,7 @@ jobs:
         PGPASSWORD=password psql -h localhost -U postgres -d pepper -f scripts/ddl.sql
 
         # Export the DATABASE_URL environment variable
-        echo "DATABASE_URL=postgres://postgres:@localhost:5432/pepper" >> $GITHUB_ENV
+        echo "DATABASE_URL=postgres://postgres:password@localhost:5432/pepper" >> $GITHUB_ENV
 
     # Step 2: Build the Rust project
     - name: Build
