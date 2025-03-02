@@ -11,12 +11,44 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: pepper
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
 
     steps:
     - uses: actions/checkout@v4
+
+    - name: Set up PostgreSQL and execute DDL
+      run: |
+        # Wait for PostgreSQL to be ready
+        until pg_isready -h localhost -p 5432 -U postgres; do
+          echo "Waiting for PostgreSQL to be ready..."
+          sleep 2
+        done
+
+        # Execute the SQL script to set up the database
+        PGPASSWORD=password psql -h localhost -U postgres -d pepper -f scripts/ddl.sql
+
+        # Export the DATABASE_URL environment variable
+        echo "DATABASE_URL=postgres://postgres:@localhost:5432/pepper" >> $GITHUB_ENV
+
+    # Step 2: Build the Rust project
     - name: Build
       run: cargo build --verbose
+
+    # Step 3: Run tests
     - name: Run tests
       run: cargo test --verbose
