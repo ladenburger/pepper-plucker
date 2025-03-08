@@ -8,16 +8,6 @@ use sqlx::{PgPool, postgres::PgPoolOptions, types::BigDecimal};
 use std::collections::HashMap;
 use std::env;
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Color {
-    /// primarykey/unique-id of a color
-    color_id: i32,
-
-    /// String of the hexadecimal representation of the color.
-    hexadecimal: String,
-}
-
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NewColor {
@@ -94,6 +84,48 @@ struct NewHarvest {
 #[serde(rename_all = "camelCase")]
 struct DisposePlant {
     date_disposed: Option<NaiveDate>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Color {
+    id: i32,
+    name: String,
+    hexadecimal: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Fruit {
+    fruit_id: i32,
+    total_produced_in_grams: BigDecimal,
+    avg_weight_in_grams: BigDecimal,
+    color: Color,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Plant {
+    plant_id: String,
+    fruit: Fruit,
+    total_produced_in_grams: f64,
+    harvests: HashMap<NaiveDate, f64>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HarvestFruit {
+    fruit_id: i32,
+    name: String,
+    weight: f64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Harvest {
+    harvest_id: i32,
+    plants: HashMap<String, f64>,
+    fruits: Vec<HarvestFruit>,
 }
 
 async fn insert_fruit(pool: web::Data<PgPool>, new_fruit: web::Json<NewFruit>) -> impl Responder {
@@ -226,13 +258,13 @@ async fn insert_fruit(pool: web::Data<PgPool>, new_fruit: web::Json<NewFruit>) -
             transaction.rollback().await.unwrap();
 
             return HttpResponse::BadRequest()
-                .body("Failed to convert f64 into BigDecimal (new_fruit.average_weight_in_grams");
+                .body("Failed to convert f64 into BigDecimal (new_fruit.average_weight_in_grams)");
         }
     };
 
     let fruit_result = sqlx::query!(
-        "INSERT INTO fruit (fruit_type, fruit_name, color, scoville_range_start, scoville_range_end, avg_weight_in_grams) 
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING fruit_id",
+        "insert into fruit (fruit_type, fruit_name, color, scoville_range_start, scoville_range_end, avg_weight_in_grams) 
+         values ($1, $2, $3, $4, $5, $6) returning fruit_id",
         fruit_type_id,
         new_fruit.fruit_name,
         color_id,
@@ -332,9 +364,118 @@ async fn dispose_plant(
     }
 }
 
-// TODO: implement
-async fn insert_harvest() -> impl Responder {
-    HttpResponse::Ok().body("Hi")
+async fn insert_harvest(
+    pool: web::Data<PgPool>,
+    new_harvest: web::Json<NewHarvest>,
+) -> impl Responder {
+    let mut transaction = pool.begin().await.unwrap();
+    let harvest_id: i32 = match sqlx::query!(
+        "insert into harvest (harvest_date, notes) values ($1, $2) returning harvest_id;",
+        new_harvest.date,
+        new_harvest.notes,
+    )
+    .fetch_one(transaction.as_mut())
+    .await
+    {
+        Ok(record) => record.harvest_id,
+        Err(e) => {
+            transaction.rollback().await.unwrap();
+
+            return HttpResponse::InternalServerError()
+                .body("Error creating harvest. ".to_owned() + &e.to_string());
+        }
+    };
+
+    for (plant_id, weight) in &new_harvest.plants {
+        let weight: BigDecimal = match BigDecimal::from_f64(*weight) {
+            Some(v) => v,
+            None => {
+                transaction.rollback().await.unwrap();
+
+                return HttpResponse::BadRequest()
+                    .body("Failed to convert f64 into BigDecimal (new_harvest.weight_in_grams)");
+            }
+        };
+        match sqlx::query!(
+            "insert into harvest_plant (harvest, plant, weight_in_grams) values ($1, $2, $3)",
+            harvest_id,
+            plant_id,
+            weight
+        )
+        .execute(transaction.as_mut())
+        .await
+        {
+            Ok(..) => (),
+            Err(e) => {
+                transaction.rollback().await.unwrap();
+
+                return HttpResponse::InternalServerError()
+                    .body("Error inserting plant for harvest. ".to_owned() + &e.to_string());
+            }
+        };
+    }
+
+    transaction.commit().await.unwrap();
+
+    HttpResponse::Ok().body("Harvest created!")
+}
+
+async fn select_fruits(pool: web::Data<PgPool>) -> impl Responder {
+    println!("requesting");
+    let fruits = sqlx::query!(
+        "select
+           ft.type_id,
+           ft.type_name,
+           f.fruit_id,
+           f.fruit_name,
+           f.avg_weight_in_grams,
+           f.scoville_range_start,
+           f.scoville_range_end,
+           c.color_id,
+           lc.value as color_name,
+           c.hexadecimal,
+           sum(hp.weight_in_grams) total_produced_in_grams
+         from fruit f 
+         inner join fruit_type ft
+           on ft.type_id = f.fruit_type
+         inner join color c 
+           on f.color = c.color_id
+         left join locale_color lc 
+           on c.color_id = lc.color and locale_id = 'de_DE'
+         left join plant p
+           on p.fruit = f.fruit_id
+         left join harvest_plant hp
+           on p.plant_id = hp.plant
+         group by
+           ft.type_id,
+           f.fruit_id,
+           c.color_id,
+           lc.value
+        ;"
+    )
+    .fetch_all(pool.as_ref())
+    .await
+    .map(|rows| {
+        rows.into_iter()
+            .map(|row| Fruit {
+                fruit_id: row.fruit_id,
+                avg_weight_in_grams: row.avg_weight_in_grams.round(2),
+                total_produced_in_grams: match row.total_produced_in_grams {
+                    Some(big_d) => big_d,
+                    None => BigDecimal::from(0),
+                }
+                .round(2),
+                color: Color {
+                    id: row.color_id,
+                    name: row.color_name,
+                    hexadecimal: row.hexadecimal,
+                },
+            })
+            .collect()
+    })
+    .unwrap_or_else(|_| Vec::new());
+
+    HttpResponse::Ok().json(fruits)
 }
 
 #[actix_web::main]
@@ -352,6 +493,9 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(pool.clone()))
+            .route("fruits", web::get().to(select_fruits))
+            // .route("plants", web::get().to(select_plants))
+            // .route("harvests", web::post().to(select_harvest))
             .route("fruit", web::post().to(insert_fruit))
             .route("plant", web::post().to(insert_plant))
             .route("plant/dispose/{plant_id}", web::patch().to(dispose_plant))
