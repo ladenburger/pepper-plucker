@@ -16,36 +16,31 @@ insert into locale (locale_id, lang) values
     ('en_US', 'English (US)'),
     ('de_DE', 'Deutsch');
 
-create table if not exists locale_color (
-    locale_id char(5) not null,
-    color     int not null,
-    value     varchar(64) not null,
-    
-    constraint pk_color_locale primary key (locale_id, color),
-    constraint fk_color_locale_color foreign key (color) references color(color_id),
-    constraint fk_color_locale_id foreign key (locale_id) references locale(locale_id)
+create table if not exists text_label (
+    label_id varchar(255) not null unique,
+
+    constraint pk_text_label primary key (label_id)
 );
 
-create table if not exists fruit_type (
-    type_id     serial not null,
-    type_name   varchar(64) not null unique,
+insert into text_label (label_id) values 
+    ('FRUIT_COLOR'),
+    ('FRUIT_DESCRIPTION');
+
+create table if not exists localized_text_content (
+    localized_text_content_id serial not null,
+    locale_id                 char(5) not null,
+    label                     varchar(255) not null,
+    option_reference_id       int,
+    value                     text not null,
     
-    constraint pk_fruit_type primary key (type_id)
+    constraint unique_locale_label unique(locale_id, label, option_reference_id),
+    constraint fk_text_content_label foreign key (label) references text_label(label_id)
 );
 
-create table if not exists locale_fruit_type_desc (
-    locale_id  char(5) not null,
-    fruit_type int not null,
-    value      varchar(64) not null,
-    
-    constraint pk_fruit_type_desc_locale primary key (locale_id, fruit_type),
-    constraint fk_fruit_type_desc_locale foreign key (locale_id) references locale(locale_id),
-    constraint fk_fruit_type_desc_type foreign key (fruit_type) references fruit_type(type_id)
-);
+create index label_index on localized_text_content(label);
 
 create table if not exists fruit (
     fruit_id             serial not null,
-    fruit_type           int not null,
     fruit_name           varchar(128) not null,
     color                int not null,
     avg_weight_in_grams  decimal(5, 2) not null,
@@ -53,25 +48,16 @@ create table if not exists fruit (
     scoville_range_end   int,
     
     constraint pk_fruit primary key (fruit_id),
-    constraint fk_fruit_type foreign key (fruit_type) references fruit_type(type_id),
     constraint fk_fruit_color foreign key (color) references color(color_id)
 );
 
-create table if not exists locale_fruit_desc (
-    locale_id char(5) not null,
-    fruit     int not null,
-    value     varchar(64) not null,
-    
-    constraint pk_fruit_desc_locale primary key (locale_id, fruit),
-    constraint fk_fruit_desc_locale foreign key (locale_id) references locale(locale_id),
-    constraint fk_fruit_desc_fruit foreign key (fruit) references fruit(fruit_id)
-);
-
 create table if not exists plant (
-    plant_id char(11) not null,
-    planted  date not null,
-    disposed date,
-    fruit    int not null,
+    plant_id         char(11) not null,
+    planted          date not null,
+    disposed         date,
+    fruit            int not null,
+    notes            varchar(255),
+    is_label_printed bool not null default false,
     
     constraint pk_plant primary key (plant_id),
     constraint fk_plant_fruit foreign key (fruit) references fruit(fruit_id)

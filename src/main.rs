@@ -1,4 +1,5 @@
 use actix_web::{App, HttpResponse, HttpServer, Responder, web};
+use askama_actix::{Template, TemplateToResponse};
 use bigdecimal::FromPrimitive;
 use chrono::Local;
 use chrono::NaiveDate;
@@ -29,15 +30,6 @@ struct NewFruit {
     /// Properties for the new color entity (cannot be used in conjunction with existing_color).
     new_color: Option<NewColor>,
 
-    /// Primary key of fruit_type entity (cannot be used in conjunction with new_fruit_type).
-    /// **Example:** `15`, which would reference to entity `15 | Habanero |`
-    existing_fruit_type: Option<i32>,
-
-    /// Name for the new fruit_type entity (cannot be used in conjunction with
-    /// existing_fruit_type).
-    /// **Example:** `"Habanero"` or `"Chilli"`
-    new_fruit_type: Option<String>,
-
     /// Name of the fruit, **NOT species/type**
     /// **Example:** `"Fatalii"`
     fruit_name: String,
@@ -55,9 +47,6 @@ struct NewFruit {
 
     /// Optionally add localized descriptions to the new fruit
     fruit_descriptions: Option<HashMap<String, String>>,
-
-    /// If the type is also created in the operation, optionally set the localized descriptions
-    fruit_type_descriptions: Option<HashMap<String, String>>,
 }
 
 #[derive(Deserialize)]
@@ -97,7 +86,8 @@ struct Color {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Fruit {
-    fruit_id: i32,
+    id: i32,
+    name: String,
     total_produced_in_grams: BigDecimal,
     avg_weight_in_grams: BigDecimal,
     color: Color,
@@ -106,7 +96,7 @@ struct Fruit {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Plant {
-    plant_id: String,
+    id: String,
     fruit: Fruit,
     total_produced_in_grams: f64,
     harvests: HashMap<NaiveDate, f64>,
@@ -123,9 +113,17 @@ struct HarvestFruit {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Harvest {
-    harvest_id: i32,
+    id: i32,
     plants: HashMap<String, f64>,
     fruits: Vec<HarvestFruit>,
+}
+
+async fn rollback_and_respond(transaction: sqlx::Transaction<'_, sqlx::Postgres>) -> HttpResponse {
+    transaction.rollback().await.unwrap();
+
+    return HttpResponse::InternalServerError().body(String::from(
+        "Failed to create color: Database insert operation failed. ".to_owned(),
+    ));
 }
 
 async fn insert_fruit(pool: web::Data<PgPool>, new_fruit: web::Json<NewFruit>) -> impl Responder {
@@ -134,21 +132,16 @@ async fn insert_fruit(pool: web::Data<PgPool>, new_fruit: web::Json<NewFruit>) -
             .body("Cannot provide both new_color and existing_color_id.");
     }
 
-    if new_fruit.new_fruit_type.is_some() && new_fruit.existing_fruit_type.is_some() {
-        return HttpResponse::BadRequest()
-            .body("Cannot provide both new_fruit_type and existing_fruit_type.");
-    }
-
-    if new_fruit.existing_fruit_type.is_some() && new_fruit.fruit_type_descriptions.is_some() {
-        return HttpResponse::BadRequest().body("Cannot add description to existing fruit_type");
-    }
-
     let mut transaction = pool.begin().await.unwrap();
     let color_id: i32;
-
-    if let Some(new_color) = &new_fruit.new_color {
+    if new_fruit.existing_color.is_some() {
+        color_id = new_fruit.existing_color.unwrap();
+    } else if new_fruit.new_color.is_none() {
+        return rollback_and_respond(transaction).await;
+    } else {
+        let new_color = new_fruit.new_color.as_ref().unwrap();
         let color_result = sqlx::query!(
-            "INSERT INTO color (hexadecimal) VALUES ($1) RETURNING color_id",
+            "insert into color (hexadecimal) values ($1) returning color_id",
             new_color.hexadecimal
         )
         .fetch_one(transaction.as_mut())
@@ -157,115 +150,42 @@ async fn insert_fruit(pool: web::Data<PgPool>, new_fruit: web::Json<NewFruit>) -
         match color_result {
             Ok(record) => {
                 color_id = record.color_id;
-                for (lang_code, color_name) in &new_color.lang {
-                    let insert_result = sqlx::query!(
-                        "INSERT INTO locale_color (color, locale_id, value) VALUES ($1, $2, $3)",
-                        color_id,
-                        lang_code,
-                        color_name
-                    )
-                    .execute(transaction.as_mut())
-                    .await;
-
-                    match insert_result {
-                        Ok(..) => (),
-                        Err(e) => {
-                            transaction.rollback().await.unwrap();
-
-                            return HttpResponse::InternalServerError()
-                                .body("Error creating color_locale. ".to_owned() + &e.to_string());
-                        }
-                    }
-                }
+                record
             }
-            Err(e) => {
-                transaction.rollback().await.unwrap();
+            Err(e) => return rollback_and_respond(transaction).await,
+        };
 
-                return HttpResponse::InternalServerError().body(String::from(
-                    "Failed to create color: Database insert operation failed. ".to_owned()
-                        + &e.to_string(),
-                ));
+        for (lang_code, color_name) in &new_color.lang {
+            let locale_label_content_insert_result = sqlx::query!(
+                "insert into localized_text_content
+                    (locale_id, label, option_reference_id, value) 
+                values ($1, $2, $3, $4)",
+                lang_code,
+                String::from("FRUIT_COLOR"),
+                color_id,
+                color_name
+            )
+            .execute(transaction.as_mut())
+            .await;
+            if locale_label_content_insert_result.is_err() {
+                return rollback_and_respond(transaction).await;
             }
         }
-    } else if let Some(existing_color_id) = new_fruit.existing_color {
-        color_id = existing_color_id;
-    } else {
-        transaction.rollback().await.unwrap();
-
-        return HttpResponse::BadRequest()
-            .body("Either new_color or existing_color_id must be provided.");
-    }
-
-    let fruit_type_id: i32;
-
-    if let Some(new_fruit_type) = &new_fruit.new_fruit_type {
-        let fruit_type_result = sqlx::query!(
-            "INSERT INTO fruit_type (type_name) VALUES ($1) RETURNING type_id",
-            new_fruit_type
-        )
-        .fetch_one(transaction.as_mut())
-        .await;
-
-        match fruit_type_result {
-            Ok(record) => {
-                fruit_type_id = record.type_id;
-                match &new_fruit.fruit_type_descriptions {
-                    Some(desc) => {
-                        for (lang_code, value) in desc {
-                            let insert_result = sqlx::query!(
-                                "INSERT INTO locale_fruit_type_desc (locale_id, fruit_type, value) VALUES ($1, $2, $3)",
-                                lang_code,
-                                fruit_type_id,
-                                value
-                            )
-                            .execute(transaction.as_mut())
-                            .await;
-
-                            match insert_result {
-                                Ok(..) => (),
-                                Err(e) => {
-                                    transaction.rollback().await.unwrap();
-
-                                    return HttpResponse::InternalServerError().body(
-                                        "Error creating description. ".to_owned() + &e.to_string(),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    None => (),
-                };
-            }
-            Err(e) => {
-                transaction.rollback().await.unwrap();
-
-                return HttpResponse::InternalServerError().body(String::from(
-                    "Failed to create fruit_type: Database insert operation failed. ".to_owned()
-                        + &e.to_string(),
-                ));
-            }
-        }
-    } else if let Some(existing_fruit_type) = new_fruit.existing_fruit_type {
-        fruit_type_id = existing_fruit_type;
-    } else {
-        return HttpResponse::BadRequest()
-            .body("Either new_fruit_type or existing_fruit_type must be provided.");
     }
 
     let weight: BigDecimal = match BigDecimal::from_f64(new_fruit.average_weight_in_grams) {
         Some(v) => v,
         None => {
-            transaction.rollback().await.unwrap();
+            return rollback_and_respond(transaction).await;
 
-            return HttpResponse::BadRequest()
-                .body("Failed to convert f64 into BigDecimal (new_fruit.average_weight_in_grams)");
+            // return HttpResponse::BadRequest()
+            //     .body("Failed to convert f64 into BigDecimal (new_fruit.average_weight_in_grams)");
         }
     };
 
     let fruit_result = sqlx::query!(
-        "insert into fruit (fruit_type, fruit_name, color, scoville_range_start, scoville_range_end, avg_weight_in_grams) 
-         values ($1, $2, $3, $4, $5, $6) returning fruit_id",
-        fruit_type_id,
+        "insert into fruit (fruit_name, color, scoville_range_start, scoville_range_end, avg_weight_in_grams) 
+         values ($1, $2, $3, $4, $5) returning fruit_id",
         new_fruit.fruit_name,
         color_id,
         new_fruit.scoville_start,
@@ -277,42 +197,34 @@ async fn insert_fruit(pool: web::Data<PgPool>, new_fruit: web::Json<NewFruit>) -
 
     let fruit_id: i32 = match fruit_result {
         Ok(res) => res.fruit_id,
-        Err(e) => {
-            transaction.rollback().await.unwrap();
-
-            return HttpResponse::InternalServerError().body(String::from(
-                "Failed to create fruit: Database insert operation failed. ".to_owned()
-                    + &e.to_string(),
-            ));
-        }
+        Err(e) => return rollback_and_respond(transaction).await,
     };
 
-    match &new_fruit.fruit_descriptions {
-        Some(desc) => {
-            for (lang_code, value) in desc {
-                let insert_result = sqlx::query!(
-                    "INSERT INTO locale_fruit_desc (locale_id, fruit, value) VALUES ($1, $2, $3)",
-                    lang_code,
-                    fruit_id,
-                    value
-                )
-                .execute(transaction.as_mut())
-                .await;
-
-                match insert_result {
-                    Ok(..) => (),
-                    Err(e) => {
-                        transaction.rollback().await.unwrap();
-
-                        return HttpResponse::InternalServerError()
-                            .body("Error creating description. ".to_owned() + &e.to_string());
-                    }
-                }
-            }
+    let descriptions = match &new_fruit.fruit_descriptions {
+        // No descriptions? Then we're done.
+        None => {
+            transaction.commit().await.unwrap();
+            return HttpResponse::Ok().body("Fruit created!");
         }
-        None => (),
+        Some(desc) => desc,
     };
 
+    for (lang_code, value) in descriptions {
+        let insert_desc_result = sqlx::query!(
+            "insert into localized_text_content
+                (locale_id, label, option_reference_id, value)
+            values ($1, $2, $3, $4);",
+            lang_code,
+            String::from("FRUIT_DESCRIPTION"),
+            fruit_id,
+            value
+        )
+        .execute(transaction.as_mut())
+        .await;
+        if insert_desc_result.is_err() {
+            return rollback_and_respond(transaction).await;
+        }
+    }
     transaction.commit().await.unwrap();
 
     HttpResponse::Ok().body("")
@@ -421,33 +333,30 @@ async fn insert_harvest(
 }
 
 async fn select_fruits(pool: web::Data<PgPool>) -> impl Responder {
-    println!("requesting");
     let fruits = sqlx::query!(
         "select
-           ft.type_id,
-           ft.type_name,
            f.fruit_id,
            f.fruit_name,
            f.avg_weight_in_grams,
            f.scoville_range_start,
            f.scoville_range_end,
+           (select count(plant.plant_id) from plant where fruit = f.fruit_id) as amount,
            c.color_id,
            lc.value as color_name,
            c.hexadecimal,
            sum(hp.weight_in_grams) total_produced_in_grams
          from fruit f 
-         inner join fruit_type ft
-           on ft.type_id = f.fruit_type
          inner join color c 
            on f.color = c.color_id
-         left join locale_color lc 
-           on c.color_id = lc.color and locale_id = 'de_DE'
+         left join localized_text_content lc 
+           on c.color_id = lc.option_reference_id 
+                           and lc.locale_id = 'de_DE'
+                           and lc.label = 'FRUIT_COLOR'
          left join plant p
            on p.fruit = f.fruit_id
          left join harvest_plant hp
            on p.plant_id = hp.plant
          group by
-           ft.type_id,
            f.fruit_id,
            c.color_id,
            lc.value
@@ -458,7 +367,8 @@ async fn select_fruits(pool: web::Data<PgPool>) -> impl Responder {
     .map(|rows| {
         rows.into_iter()
             .map(|row| Fruit {
-                fruit_id: row.fruit_id,
+                id: row.fruit_id,
+                name: row.fruit_name,
                 avg_weight_in_grams: row.avg_weight_in_grams.round(2),
                 total_produced_in_grams: match row.total_produced_in_grams {
                     Some(big_d) => big_d,
@@ -478,6 +388,30 @@ async fn select_fruits(pool: web::Data<PgPool>) -> impl Responder {
     HttpResponse::Ok().json(fruits)
 }
 
+async fn print_plant_labels(pool: web::Data<PgPool>) -> impl Responder {
+    let plants = sqlx::query!("select plant_id from plant where is_label_printed = false;")
+        .fetch_all(pool.as_ref())
+        .await
+        .map(|rows| rows.into_iter().map(|row| row.plant_id).collect());
+
+    if plants.is_err() {
+        return HttpResponse::InternalServerError().body("");
+    }
+    let plants: Vec<String> = plants.unwrap();
+
+    if plants.is_empty() {
+        return HttpResponse::InternalServerError().body("");
+    }
+
+    return PrintPlantHtml { plants }.to_response();
+}
+
+#[derive(Template)]
+#[template(path = "print_plant.html")]
+pub struct PrintPlantHtml {
+    plants: Vec<String>,
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv().ok();
@@ -494,6 +428,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(web::Data::new(pool.clone()))
             .route("fruits", web::get().to(select_fruits))
+            .route("plants/print-missing", web::get().to(print_plant_labels))
             // .route("plants", web::get().to(select_plants))
             // .route("harvests", web::post().to(select_harvest))
             .route("fruit", web::post().to(insert_fruit))

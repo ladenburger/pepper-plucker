@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <style>
+            .plant-item-container {
+                display: flex;
+                justify-content: flex-start;
+                flex-wrap: wrap;
+            }
+            .plant-item {
+                display: flex;
+                justify-content: flex-end;
+                align-items: center;
+                border: solid;
+                border-color: grey;
+                border-width: 1px;
+                height: 9mm;
+                padding-right: 4mm;
+                width: 40mm;
+                font-family: Zed Mono Extended;
+                font-size: 16pt;
+                break-inside: avoid;
+                page-break-inside: avoid;
+            } 
+            @media print {
+                @page {
+                    size: A4 landscape;
+                }
+                body {
+                    margin: 0;
+                    padding: 10mm;
+                    width: 276mm;
+                    height: 190mm;
+                    background: white;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="plant-item-container">
+            {% for plant in plants %}
+            <div class="plant-item">
+                {{ plant }}
+            </div>
+            {% endfor %}
+        </div>
+    </body>
+</html>
