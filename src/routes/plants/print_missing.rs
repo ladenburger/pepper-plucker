@@ -22,7 +22,15 @@ pub async fn print_plant_labels(pool: web::Data<PgPool>) -> HttpResponse {
     if plants.is_empty() {
         return HttpResponse::InternalServerError().body("");
     }
-    // TODO: set plantstatus to label_printed
 
-    PrintPlantHtml { plants }.to_response()
+    match sqlx::query!(
+        "update plant set is_label_printed = true 
+        where is_label_printed = false;"
+    )
+    .execute(pool.as_ref())
+    .await
+    {
+        Ok(_) => PrintPlantHtml { plants }.to_response(),
+        Err(..) => HttpResponse::InternalServerError().body(""),
+    }
 }

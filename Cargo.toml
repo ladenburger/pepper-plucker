@@ -2,7 +2,7 @@
 path = "src/lib.rs"
 
 [package]
-name = "pepper-manager"
+name = "pepper-plucker"
 version = "0.1.0"
 edition = "2024"
 authors = ["Benedikt Ladenburger <b.ladenburger@protonmail.com>"]
@@ -18,3 +18,7 @@ bigdecimal = { version = "0.4", features = ["serde"] }
 dotenv = "0.15"
 askama = {  version = "0.12.1", default-features = false, features = [ "with-actix-web"] }
 askama_actix = "0.14"
+serde-aux = "4"
+secrecy = { version = "0.8", features = ["serde"] }
+config = { version = "0.14", default-features = false, features = ["yaml"] }
+anyhow = "1.0.40"

@@ -1,6 +1,5 @@
 use super::new_color::NewColor;
 use serde::Deserialize;
-use std::collections::HashMap;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +26,6 @@ pub struct NewFruit {
     /// Average weight of a single fruit in grams.
     pub average_weight_in_grams: f64,
 
-    /// Optionally add localized descriptions to the new fruit
-    pub fruit_descriptions: Option<HashMap<String, String>>,
+    /// Optionally add description to the new fruit
+    pub description: Option<String>,
 }

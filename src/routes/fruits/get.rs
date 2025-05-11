@@ -13,24 +13,19 @@ pub async fn select_fruits(pool: web::Data<PgPool>) -> HttpResponse {
            f.scoville_range_end,
            (select count(plant.plant_id) from plant where fruit = f.fruit_id) as amount,
            c.color_id,
-           lc.value as color_name,
+           c.name as color_name,
            c.hexadecimal,
            sum(hp.weight_in_grams) total_produced_in_grams
          from fruit f 
          inner join color c 
            on f.color = c.color_id
-         left join localized_text_content lc 
-           on c.color_id = lc.option_reference_id 
-                           and lc.locale_id = 'de_DE'
-                           and lc.label = 'FRUIT_COLOR'
          left join plant p
            on p.fruit = f.fruit_id
          left join harvest_plant hp
            on p.plant_id = hp.plant
          group by
            f.fruit_id,
-           c.color_id,
-           lc.value
+           c.color_id
         ;"
     )
     .fetch_all(pool.as_ref())

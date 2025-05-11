@@ -1,48 +1,16 @@
 create table if not exists color (
     color_id    serial not null,
+    name        varchar(32) not null,
     hexadecimal char(6) not null check (hexadecimal  ~ '^[0-9A-F]{6}$'),
     
     constraint pk_fruit_color primary key (color_id)
 );
 
-create table if not exists locale (
-    locale_id char(5),
-    lang      varchar(64),
-    
-    constraint pk_locale_code primary key (locale_id)
-);
-
-insert into locale (locale_id, lang) values
-    ('en_US', 'English (US)'),
-    ('de_DE', 'Deutsch');
-
-create table if not exists text_label (
-    label_id varchar(255) not null unique,
-
-    constraint pk_text_label primary key (label_id)
-);
-
-insert into text_label (label_id) values 
-    ('FRUIT_COLOR'),
-    ('FRUIT_DESCRIPTION');
-
-create table if not exists localized_text_content (
-    localized_text_content_id serial not null,
-    locale_id                 char(5) not null,
-    label                     varchar(255) not null,
-    option_reference_id       int,
-    value                     text not null,
-    
-    constraint unique_locale_label unique(locale_id, label, option_reference_id),
-    constraint fk_text_content_label foreign key (label) references text_label(label_id)
-);
-
-create index label_index on localized_text_content(label);
-
 create table if not exists fruit (
     fruit_id             serial not null,
     fruit_name           varchar(128) not null,
     color                int not null,
+    description          varchar(255),
     avg_weight_in_grams  decimal(5, 2) not null,
     scoville_range_start int not null,
     scoville_range_end   int,
@@ -97,6 +65,26 @@ create trigger trg_set_plant_id
 before insert on plant
 for each row
 execute function fn_set_plant_id();
+
+create table person (
+    person_id        serial not null,
+    first_name       varchar(255) not null,
+    last_name        varchar(255) not null,
+    entry_created_at date not null default current_timestamp,
+
+    constraint pk_person primary key (person_id)
+);
+
+create table plant_gift (
+    gift_id   serial not null,
+    person    int not null,
+    plant     char(11) not null,
+    gifted_at date not null default current_timestamp,
+
+    constraint pk_plant_gift  primary key (gift_id),
+    constraint fk_gift_person foreign key (person) references person(person_id),
+    constraint fk_gift_plant foreign key (plant) references plant(plant_id)
+);
 
 create table if not exists harvest (
     harvest_id   serial not null,
